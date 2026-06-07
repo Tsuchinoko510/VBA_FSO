@@ -1,0 +1,149 @@
+Option Explicit
+
+' ==========================================================
+' プロシージャ名: execute
+' 目的: 指定されたフォルダ配下のファイルおよびフォルダの一覧を取得し、Excelシートに出力する。
+' 処理概要:
+' 1. Windows API (FindFirstFileW, FindNextFileW) を利用している「CFileFinder」クラスを使用する。
+' 2. APIにより、VBA標準機能より高速かつUnicode対応（多言語対応）でファイル情報を取得する。
+' 3. 検索中は、画面更新停止や計算手動化 によりExcelの動作を最適化し、処理速度を最大化する。
+' 4. 取得した全件の結果データを配列で整形した後、シートに一括で書き出し高速化する。
+' 5. 処理終了後、環境設定を元に戻すとともに、完了メッセージを表示する。
+' ==========================================================
+Sub execute()
+    Dim finder As CFileFinder                       ' ファイル検索を実行するクラスのインスタンス
+    Dim Results As Variant                          ' CFileFinder.Resultsから受け取った2次元結果配列
+    Dim rootDir As String                           ' 検索対象のルートフォルダパス (A1セルから取得)
+    Dim ws As Worksheet                             ' 結果を出力するワークシート
+    Dim i As Long                                   ' ループカウンタ
+    Dim totalCount As Long                          ' 検索結果の総件数
+    Dim outputData() As Variant                     ' 最終的にシートに書き出すための整形済み2次元配列
+    Dim startTime As Double                         ' 処理開始時刻 (Timer関数で取得)
+    Dim calcMode As Long                            ' Application.calculationの保存
+  
+    ' ★ 検索対象の指定
+    Const IS_RECURSIVE As Boolean = True            ' 【検索の深さ】サブフォルダを再帰的に検索するか (True: 実行, False: ルート直下のみ)
+    Const INCLUDE_FOLDERS As Boolean = True         ' 【含める種類】結果にフォルダ（ディレクトリ）を含めるか (True: 含める, False: 除外)
+    Const INCLUDE_FILES As Boolean = True           ' 【含める種類】結果にファイルを含めるか (True: 含める, False: 除外)
+
+    ' ★ 出力先の行指定
+    Const HEADER_ROW As Long = 3                    ' 【出力先】ヘッダー（見出し）を出力する行番号
+    Const RESULT_START_ROW As Long = 4              ' 【出力先】検索結果のデータを出力開始する行番号 (通常は HEADER_ROW + 1)
+  
+    On Error GoTo ErrorHandler
+  
+    ' フォルダ指定セルと出力シートはアクティブシートとする
+    Set ws = ThisWorkbook.Worksheets(1)
+  
+    ' パスの取得と検証
+    rootDir = Trim(CStr(ws.Cells(1, 1).Value))      ' フォルダパス取得（A1セル）
+    If rootDir = "" Then
+        MsgBox "フォルダパスが指定されていません。" & vbCrLf & _
+               "セルA1にフォルダパスを入力してください。", vbExclamation, "エラー"
+        Exit Sub
+    End If
+    If Dir(rootDir, vbDirectory) = "" Then
+        MsgBox "指定のフォルダは存在しません:" & vbCrLf & rootDir, vbExclamation, "エラー"
+        Exit Sub
+    End If
+  
+    startTime = Timer                               ' 開始時刻を記録
+    Call StartOptimization(calcMode)                ' 自動計算と画面更新を停止
+  
+    ' ヘッダー行の設定
+    With ws.Cells(HEADER_ROW, 1).Resize(, 5)
+        .Value = Array("フォルダパス", "名前", "種類", "サイズ", "更新日時")
+        .Font.Bold = True
+        .Interior.Color = RGB(200, 200, 200)
+        .HorizontalAlignment = xlCenter
+    End With
+  
+    ' API検索の実行
+    Set finder = New CFileFinder
+    Call finder.StartSearch(rootDir, IS_RECURSIVE, INCLUDE_FOLDERS, INCLUDE_FILES)
+    totalCount = finder.Count                       ' 検索結果の総件数
+    If finder.LastError <> "" Then
+        MsgBox "検索中にエラーが発生:" & vbCrLf & finder.LastError, vbExclamation, "警告"
+    End If
+    Results = finder.Results                        ' 結果配列(Variant)を取得
+  
+    ' 過去のデータをクリア
+    ws.Range(ws.Cells(RESULT_START_ROW, 1), ws.Cells(ws.Rows.Count, 5)).ClearContents
+  
+    ' 結果が0件の場合の処理
+    If totalCount = 0 Or IsError(Results(1, 1)) Then
+        Call EndOptimization(calcMode)              ' 画面更新と計算を元に戻す
+        MsgBox "対象となるファイル/フォルダが見つかりませんでした。", vbInformation, "結果"
+        Set finder = Nothing
+        Exit Sub
+    End If
+  
+    ' 出力用配列の準備（5列: フォルダパス、名前、種類、サイズ、更新日時）
+    ReDim outputData(1 To totalCount, 1 To 5)
+  
+    ' データの変換と整形（A列:フォルダパス, B列:名前, C列:種類, D列:サイズ, E列:更新日時）
+    For i = 1 To totalCount
+        outputData(i, 1) = CStr(Results(i, 1))
+        outputData(i, 2) = CStr(Results(i, 2))
+        outputData(i, 3) = IIf(CBool(Results(i, 3)), "フォルダ", "ファイル")
+        outputData(i, 4) = IIf(CBool(Results(i, 3)), "", CLng(Results(i, 4)))
+        outputData(i, 5) = IIf(IsNull(Results(i, 5)), "", Results(i, 5))
+    Next
+  
+    ' データを一括でシートに書き出し (パフォーマンス向上)
+    ws.Cells(RESULT_START_ROW, 1).Resize(totalCount, 5).Value = outputData
+  
+    ' 書式設定
+    With ws
+        ' D列: サイズ (KB)
+        With .Range(.Cells(RESULT_START_ROW, 4), .Cells(RESULT_START_ROW + totalCount - 1, 4))
+            .NumberFormatLocal = "#,##0 ""KB"""
+            .HorizontalAlignment = xlRight
+        End With
+        ' E列: 日付
+        With .Range(.Cells(RESULT_START_ROW, 5), .Cells(RESULT_START_ROW + totalCount - 1, 5))
+            .NumberFormatLocal = "yyyy/mm/dd hh:mm:ss"
+            .HorizontalAlignment = xlCenter
+        End With
+    End With
+  
+    ' 処理時間の計算
+    Dim elapsedTime As Double
+    elapsedTime = Timer - startTime
+  
+  
+    Call EndOptimization(calcMode)
+    MsgBox "ファイル一覧の取得が完了しました。" & vbCrLf & vbCrLf & _
+           "件数: " & Format(totalCount, "#,##0") & " 件" & vbCrLf & _
+           "処理時間: " & Format(elapsedTime, "0.00") & " 秒", _
+           vbInformation, "完了"
+    Set finder = Nothing
+    Exit Sub
+  
+ErrorHandler:
+    ' エラー発生時の復帰処理
+    Set finder = Nothing                            ' クラスの解放
+    Call EndOptimization(calcMode)                  ' 画面更新と計算を元に戻す
+    MsgBox "エラーが発生しました:" & vbCrLf & vbCrLf & _
+           "イミディエイトウィンドウで詳細を確認してください。", _
+           vbCritical, "エラー"
+    Debug.Print "エラー発生: " & Err.Number & " - " & Err.Description
+End Sub
+
+' ==========================================================
+' 処理開始時の設定最適化を行う。
+' ==========================================================
+Sub StartOptimization(ByRef calcMode As Long)
+    calcMode = Application.Calculation              ' 現在の計算モードを保存
+    Application.Calculation = xlCalculationManual   ' 自動計算を停止
+    Application.ScreenUpdating = False              ' 画面更新を停止
+End Sub
+
+' ==========================================================
+' 処理終了時に設定を元に戻す。
+' ==========================================================
+Sub EndOptimization(ByRef calcMode As Long)
+    Application.ScreenUpdating = True               ' 画面更新を再開
+    Application.Calculation = calcMode              ' 計算を元に戻す (処理開始時の設定に戻す)
+End Sub
+
