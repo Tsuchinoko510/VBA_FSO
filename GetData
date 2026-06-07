@@ -1,0 +1,63 @@
+Option Explicit
+
+Public Sub execute()
+    
+    Dim rs As Object: Set rs = CreateObject("ADODB.RecordSet")
+    With rs.Fields
+        .append "ファイル名", 8
+        .append "シート名", 8
+        .append "質問１", 8
+        .append "回答１", 8
+    End With
+    rs.Open
+    
+    Dim xlApp As Excel.Application: Set xlApp = New Excel.Application
+    xlApp.Visible = True
+    
+    Dim row As Integer: row = 3
+    With ThisWorkbook.Worksheets(1).Range("A3")
+        Do Until .Cells(row, 2).Value = ""
+            Dim path As String: path = .Cells(row, 1).Value
+            Dim fileName As String: fileName = .Cells(row, 2).Value
+            Select Case True
+                Case fileName Like "*.xlsx" Or fileName Like "*.xlsm"
+                    Call getValue(xlApp, path, fileName, rs)
+                Case Else
+                    
+            End Select
+            row = row + 1
+        Loop
+    End With
+    
+    rs.moveFirst
+    ThisWorkbook.Worksheets(2).Range("A2").CopyFromRecordset data:=rs
+    rs.Close
+    
+    xlApp.Quit: Set xlApp = Nothing
+
+End Sub
+
+Private Function getValue( _
+        ByRef xlApp As Excel.Application, _
+        ByVal path As String, _
+        ByVal fileName As String, _
+        ByRef rs As Object _
+    )
+
+    Dim wb As Workbook: Set wb = xlApp.Workbooks.Open( _
+            fileName:=path & fileName, ReadOnly:=True)
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        With rs
+            .AddNew
+            ![ファイル名] = fileName
+            ![シート名] = ws.Name
+            ![質問１] = ws.Range("A10").Value
+            ![回答１] = ws.Range("G10").Value
+            .Update
+        End With
+    Next ws
+    
+    wb.Close SaveChanges:=False
+
+End Function
