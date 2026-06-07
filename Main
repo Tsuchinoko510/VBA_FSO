@@ -1,0 +1,38 @@
+Option Explicit
+
+Public Sub main()
+    
+    Debug.Print "マクロ開始"
+    Call macroStart
+    Call GetFileList.execute
+    Call GetData.execute
+    Call macroEnd
+    Debug.Print "マクロ終了"
+    
+End Sub
+
+'処理軽減開始
+Function macroStart()
+
+    With Application
+        .Calculation = xlCalculationManual  '自動計算OFF
+        .ScreenUpdating = False             '描画OFF
+        .EnableEvents = False               'イベントOFF
+        .Cursor = xlWait                 'カーソルOFF
+    End With
+
+End Function
+
+
+
+'処理軽減終了
+Function macroEnd()
+
+    With Application
+        .Calculation = xlCalculationAutomatic   '自動計算ON
+        .ScreenUpdating = True             '描画ON
+        .EnableEvents = True               'イベントON
+        .Cursor = xlDefault                 'カーソルON
+    End With
+
+End Function
